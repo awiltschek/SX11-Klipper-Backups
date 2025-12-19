@@ -1,0 +1,212 @@
+[gcode_macro test3]
+gcode:
+    
+#  {% if (printer.extruder.temperature > 150) %}
+#    M117 "inside"
+#  {% endif %}
+  {% if printer.extruder.temperature < params.EXTRUDER_TEMP|int %}
+      M117 Pre-heating ... Extruder: 150
+      SET_HEATER_TEMPERATURE HEATER=extruder TARGET=150
+    {% endif %}
+
+[gcode_macro test2]
+variable_temp: 0
+variable_ext: "extruder1"
+gcode:
+    {% set ns = namespace() %}
+    {% set ns.path = ['printer.', ext, 'temperature'] %}
+
+    SET_GCODE_VARIABLE MACRO=test VARIABLE=temp VALUE=???
+
+
+[gcode_macro SEARCH_VARS]
+description: search and show some vars
+gcode:
+    {% set search = params.S|lower %}
+    {% set ns = namespace() %}
+    {% for item in printer  %}
+        {% if ' ' in item %}
+            {% set ns.path = ['printer', "['%s']" % (item), ''] %}
+        {% else %}
+            {% set ns.path = ['printer.', item, ''] %}   
+        {% endif %} 
+
+        {% if search in ns.path|lower %}
+            { action_respond_info(ns.path|join) }
+        {% endif %} 
+
+        {% if printer[item].items() %}
+            {% for childkey, child in printer[item].items() recursive %}
+                {% set ns.path = ns.path[:loop.depth|int + 1] %}
+
+                {% if ' ' in childkey %}
+                    {% set null = ns.path.append("['%s']" % (childkey)) %}
+                {% else %}
+                    {% set null = ns.path.append(".%s" % (childkey)) %}
+                {% endif %} 
+
+                {% if child is mapping  %}
+                    { loop(child.items()) }
+                {% else %}
+                    {% if search in ns.path|lower %}
+                        { action_respond_info("%s : %s" % (ns.path|join, child)) }   
+                    {% endif %} 
+                {% endif %} 
+                
+            {% endfor %}
+        {% endif %} 
+    {% endfor %}
+
+
+[gcode_macro TEST]
+description: some testing
+gcode:
+    { action_respond_info("Extruder Temp: %.1f" % (printer.extruder.temperature)) }
+    { action_respond_info("Bed Temp: %.1f" % (printer.heater_bed.temperature)) }
+
+    {% if (printer.extruder.temperature == 0) or (printer.heater_bed.temperature == 0) %}
+      ;{% action_respond_info("Extruder Temp: %.1f" % (printer.extruder.temperature)) %}
+      ;{% action_respond_info("Bed Temp: %.1f" % (printer.heater_bed.temperature)) %}
+      M117 "inside"
+    {% endif %}
+
+[gcode_macro TEST_PRINT_START]
+description: Macro to Start a PrintJob (BED_TEMP, EXTRUDER_TEMP to be set)
+# Reference https://github.com/KevinOConnor/klipper/blob/master/docs/Config_Reference.md#gcode_macroA
+variable_parameter_AREA_START : 0,0
+variable_parameter_AREA_END : 0,0
+variable_parameter_PRINT_MIN : 0,0
+variable_parameter_PRINT_MAX : 0,0
+
+gcode:
+    {% set BED = params.BED|default(60)|int %}
+    {% set EXTRUDER = params.EXTRUDER|default(210)|int %}
+    M117 Start heating ... Bed:{BED_TEMP} Extruder:{EXTRUDER_TEMP}
+
+   {% if (params.PRINT_MIN != null) and (params.PRINT_MAX  != null) %}
+     {% set print_min_x = params.PRINT_MIN.split(",")[0]|float %}
+     {% set print_min_y = params.PRINT_MIN.split(",")[1]|float %}
+     {% set print_max_x = params.PRINT_MAX.split(",")[0]|float %}
+     {% set print_max_y = params.PRINT_MAX.split(",")[1]|float %}
+   {% endif %}   
+
+   {% if (params.AREA_START != null) and (params.AREA_END  != null) %}
+     {% set print_min_x = params.AREA_START.split(",")[0]|float %}
+     {% set print_min_y = params.AREA_START.split(",")[1]|float %}
+     {% set print_max_x = params.AREA_END.split(",")[0]|float %}
+     {% set print_max_y = params.AREA_END.split(",")[1]|float %}
+   {% endif %}   
+   M117 Print position ... Xmin:{print_min_x} Ymin:{print_min_y} Xmax:{print_max_x} Ymax:{print_max_y}
+
+   M117 Load Bedmesh default
+   BED_MESH_PROFILE LOAD=default
+    M117 Create Print Area Bedmesh
+    {% if (params.AREA_START != null) and (params.AREA_END  != null) %}
+      # macro _Archive/BedMeshPrintArea_macros.cfg - BED_MESH_CALIBRATE AREA_START={params.AREA_START|default("56,30")} AREA_END={params.AREA_END|default("280,280")}
+      BED_MESH_CALIBRATE PRINT_MIN={params.AREA_START} PRINT_MAX={params.AREA_END}
+    {% else %}
+      {% if (params.PRINT_MIN != null) and (params.PRINT_MAX  != null) %}
+        {% if (params.FORCE_NEW_MESH != null)  %}
+          BED_MESH_CALIBRATE PRINT_MIN={params.PRINT_MIN} PRINT_MAX={params.PRINT_MAX} FORCE_NEW_MESH=True
+        {% else %}
+          BED_MESH_CALIBRATE PRINT_MIN={params.PRINT_MIN} PRINT_MAX={params.PRINT_MAX}
+        {% endif %}
+      {% endif %}
+    {% endif %}
+
+
+# Macro to calculate the probe min/max/current coordinates
+
+##########################DEPENDENCIES##########################
+# 
+# This config section is required to output text to the console
+# which is used by the macro. If you already have an equivalent
+# config section elsewhere, you can comment this one out.
+[respond]
+# 
+################################################################
+
+[gcode_macro GET_PROBE_LIMITS]
+description: Calculates the probe min/max/current coordinates
+gcode: 
+  # Find probe config in configfile
+  {% if printer.configfile.config["bltouch"] %}
+    # bltouch section found
+    {% set probe = printer.configfile.config["bltouch"] %}
+    {% set has_probe = True %}
+  {% elif printer.configfile.config["probe"] %}
+    # probe section found
+    {% set probe = printer.configfile.config["probe"] %}
+    {% set has_probe = True %}
+  {% else %}
+    # No probe or bltouch sections found
+    RESPOND MSG="Failed to detect probe in configfile"
+  {% endif %}
+
+  # only do the rest if we have a probe to work with
+  {% if has_probe %}
+
+    {% set stepperx = printer.configfile.config["stepper_x"] %}
+    {% set steppery = printer.configfile.config["stepper_y"] %}
+    {% set xprobemin = stepperx["position_min"]|float + probe["x_offset"]|float %} 
+    {% set xprobemax = stepperx["position_max"]|float + probe["x_offset"]|float %} 
+    {% set yprobemin = steppery["position_min"]|float + probe["y_offset"]|float %} 
+    {% set yprobemax = steppery["position_max"]|float + probe["y_offset"]|float %}
+
+    RESPOND MSG="Minimum PROBE position X={xprobemin} Y={yprobemin}" 
+    RESPOND MSG="Maximum PROBE position X={xprobemax} Y={yprobemax}"
+
+    # check if printer homed
+    {% if "xyz" in printer.toolhead.homed_axes %} 
+      {% set curprobex = printer.toolhead.position.x|float + probe["x_offset"]|float %} 
+      {% set curprobey = printer.toolhead.position.y|float + probe["y_offset"]|float %} 
+      RESPOND MSG="Current PROBE position X={curprobex} Y={curprobey}"
+    {% endif %}
+  {% endif %}
+
+
+
+#[verify_heater heater_bed]
+#hysteresis: 20
+#[verify_heater extruder]
+#hysteresis: 5
+
+#Inputshaper commands
+# 1. ACCELEROMETER_QUERY
+# 2. MEASURE_AXES_NOISE
+# 3. SHAPER_CALIBRATE AXIS=X
+# 4. SHAPER_CALIBRATE AXIS=Y
+
+
+#[gcode_macro TEST_MACRO]
+#description: Macro to Start a PrintJob (BED_TEMP, EXTRUDER_TEMP to be set)
+#gcode:
+#    {% if printer.toolhead.homed_axes != 'xyz' %}
+#	G28							#Home All Axes
+#	{% endif %}
+
+
+#[gcode_macro GET_X_HOMING_STATE] 
+#gcode: 
+#  {% if 'x' in printer.toolhead.homed_axes %} 
+#    { printer.gcode.action_respond_info('X: Homed') } 
+#    M117 X: Homed
+#  {% else %} 
+#    { printer.gcode.action_respond_info('X: Not Homed') } 
+#    M117 X: Not Homed
+#  {% endif %}
+
+
+#[gcode_macro HOMING_STATUS] 
+#gcode: 
+#    {% set homestatus = printer.toolhead.homed_axes %} 
+#    M117 Home-Status: {homestatus}
+#
+#[gcode_macro BEDMESH_TEST]
+#description: Macro to Start a PrintJob (BED_TEMP, EXTRUDER_TEMP to be set)
+# Reference https://github.com/KevinOConnor/klipper/blob/master/docs/Config_Reference.md#gcode_macroA
+#variable_parameter_AREA_START : 0,0
+#variable_parameter_AREA_END : 0,0
+#gcode:
+#  G28
+#  BED_MESH_CALIBRATE AREA_START={params.AREA_START|default("0,0")} AREA_END={params.AREA_END|default("0,0")}
